@@ -294,9 +294,8 @@ public:
         _maybeRotate();
 
         auto& partition = _getPartitionForIdx(entry.idx);
-        _sharedDb.db()->Put({}, partition.cf, U64Key::Static(entry.idx.u64).toSlice(), rocksdb::Slice((const char*)entry.value.data(), entry.value.size()));
+        ROCKS_DB_CHECKED(_sharedDb.db()->Put({}, partition.cf, U64Key::Static(entry.idx.u64).toSlice(), rocksdb::Slice((const char*)entry.value.data(), entry.value.size())));
         _partitionKeyInserted(partition, entry.idx);
-
     }
 
     void dropEntriesAfterIdx(LogIdx start) {
@@ -490,8 +489,8 @@ public:
     }
 
     void setNomineeToken(LeaderToken token) {
-        if (++_leaderToken.idx() < _nomineeToken.idx()) {
-            LOG_INFO(_env, "Got a nominee token for epoch %s, last leader epoch is %s, we must have skipped leader election.", _nomineeToken.idx(), _leaderToken.idx());
+        if (++_leaderToken.idx() < token.idx()) {
+            LOG_INFO(_env, "Got a nominee token for epoch %s, last leader epoch is %s, we must have skipped leader election.", token.idx(), _leaderToken.idx());
             _data.dropEntriesAfterIdx(_lastReleased);
         }
         _nomineeToken = token;
@@ -1048,7 +1047,7 @@ private:
             auto& requestIds = _electionState->recoveryRequests[i];
             auto& participatingReplicas = _electionState->requestIds;
             for (ReplicaId replicaId = 0; replicaId.u8 < LogsDB::REPLICA_COUNT; ++replicaId.u8) {
-                if (replicaId == replicaId) {
+                if (replicaId == _replicaId) {
                     requestIds[replicaId.u8] = ReqResp::CONFIRMED_REQ_ID;
                     continue;
                 }
