@@ -68,6 +68,8 @@ bool ternfs_unexpected_error(int err) {
     case TERNFS_ERR_BLOCK_NOT_FOUND: return false;
     case TERNFS_ERR_BLOCK_IO_ERROR_FILE: return false;
     case TERNFS_ERR_BLOCK_IO_ERROR_DEVICE: return false;
+    case TERNFS_ERR_SHARDS_NOT_READY: return false;
+    case TERNFS_ERR_CDC_NOT_READY: return false;
     case -ERESTARTSYS: return false;
     case -ETIMEDOUT: return false;
     case -ECONNREFUSED: return false;
@@ -119,6 +121,8 @@ int ternfs_error_to_linux(int err) {
     case TERNFS_ERR_MALFORMED_RESPONSE: return -EIO;
     case TERNFS_ERR_BLOCK_IO_ERROR_FILE: return -EIO;
     case TERNFS_ERR_BLOCK_IO_ERROR_DEVICE: return -EIO;
+    case TERNFS_ERR_SHARDS_NOT_READY: return -EAGAIN;
+    case TERNFS_ERR_CDC_NOT_READY: return -EAGAIN;
     }
     return -EIO;
 }

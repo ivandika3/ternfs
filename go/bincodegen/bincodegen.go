@@ -1620,6 +1620,8 @@ func main() {
 		"LOCATION_NOT_FOUND",
 		"AUTO_DECOMMISSION_RATE_LIMITED",
 		"REGISTRY_OVERLOADED",
+		"SHARDS_NOT_READY",
+		"CDC_NOT_READY",
 	}
 
 	kernelShardReqResps := []reqRespType{

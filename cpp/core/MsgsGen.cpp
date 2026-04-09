@@ -299,6 +299,12 @@ std::ostream& operator<<(std::ostream& out, TernError err) {
     case TernError::REGISTRY_OVERLOADED:
         out << "REGISTRY_OVERLOADED";
         break;
+    case TernError::SHARDS_NOT_READY:
+        out << "SHARDS_NOT_READY";
+        break;
+    case TernError::CDC_NOT_READY:
+        out << "CDC_NOT_READY";
+        break;
     default:
         out << "TernError(" << ((int)err) << ")";
         break;

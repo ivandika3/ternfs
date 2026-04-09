@@ -87,6 +87,11 @@ static int ternfs_refresh_fs_info(struct ternfs_fs_info* info) {
         u8 registry_resp_kind;
         err = ternfs_read_registry_resp_header(shards_resp_header, &registry_resp_len, &registry_resp_kind);
         if (err < 0) { goto out_sock; }
+        if (registry_resp_kind == 0) {
+            u16 ternfs_err = get_unaligned_le16(shards_resp_header + TERNFS_REGISTRY_RESP_HEADER_SIZE);
+            ternfs_info("registry returned error %s (%d) for shards request", ternfs_err_str(ternfs_err), ternfs_err);
+            err = -EAGAIN; goto out_sock;
+        }
         u16 shard_info_len = get_unaligned_le16(shards_resp_header + sizeof(shards_resp_header) - 2);
         if (shard_info_len != 256) {
             ternfs_info("expected 256 shard infos, got %d", shard_info_len);
@@ -143,6 +148,13 @@ static int ternfs_refresh_fs_info(struct ternfs_fs_info* info) {
         u8 registry_resp_kind;
         err = ternfs_read_registry_resp_header(cdc_resp_header, &registry_resp_len, &registry_resp_kind);
         if (err < 0) { goto out_sock; }
+        if (registry_resp_kind == 0) {
+            char err_buf[2];
+            if (err = recvloop(registry_sock, err_buf, sizeof err_buf), err < 0) goto out_sock;
+            u16 ternfs_err = get_unaligned_le16(err_buf);
+            ternfs_info("registry returned error %s (%d) for CDC request", ternfs_err_str(ternfs_err), ternfs_err);
+            err = -EAGAIN; goto out_sock;
+        }
         if (registry_resp_len != TERNFS_LOCAL_CDC_RESP_SIZE) {
             ternfs_debug("expected size of %d, got %d", TERNFS_LOCAL_CDC_RESP_SIZE, registry_resp_len);
             err = -EINVAL; goto out_sock;

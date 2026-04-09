@@ -32,15 +32,24 @@ void RegistryReader::step() {
         resp.requestId = req.requestId;
         switch (req.req.kind()) {
         case RegistryMessageKind::LOCAL_SHARDS: {
-            auto& registryResp = resp.resp.setLocalShards();
-            registryResp.shards.els = _shardsAtLocation(_options.logsDBOptions.location);
+            auto& shards = _shardsAtLocation(_options.logsDBOptions.location);
+            if (!_allShardsReady(shards)) {
+                resp.resp.setError() = TernError::SHARDS_NOT_READY;
+            } else {
+                auto& registryResp = resp.resp.setLocalShards();
+                registryResp.shards.els = shards;
+            }
             break;
         }
         case RegistryMessageKind::LOCAL_CDC: {
-            auto& registryResp = resp.resp.setLocalCdc();
             auto cdcInfo = _cdcAtLocation(_options.logsDBOptions.location);
-            registryResp.addrs = cdcInfo.addrs;
-            registryResp.lastSeen = cdcInfo.lastSeen;
+            if (cdcInfo.addrs.addrs[0].port == 0) {
+                resp.resp.setError() = TernError::CDC_NOT_READY;
+            } else {
+                auto& registryResp = resp.resp.setLocalCdc();
+                registryResp.addrs = cdcInfo.addrs;
+                registryResp.lastSeen = cdcInfo.lastSeen;
+            }
             break;
         }
         case RegistryMessageKind::INFO: {
@@ -76,15 +85,24 @@ void RegistryReader::step() {
             break;
         }
         case RegistryMessageKind::SHARDS_AT_LOCATION: {
-            auto& registryResp = resp.resp.setShardsAtLocation();
-            registryResp.shards.els = _shardsAtLocation(req.req.getShardsAtLocation().locationId);
+            auto& shards = _shardsAtLocation(req.req.getShardsAtLocation().locationId);
+            if (!_allShardsReady(shards)) {
+                resp.resp.setError() = TernError::SHARDS_NOT_READY;
+            } else {
+                auto& registryResp = resp.resp.setShardsAtLocation();
+                registryResp.shards.els = shards;
+            }
             break;
         }
         case RegistryMessageKind::CDC_AT_LOCATION: {
-            auto& registryResp = resp.resp.setCdcAtLocation();
             auto cdcInfo = _cdcAtLocation(req.req.getCdcAtLocation().locationId);
-            registryResp.addrs = cdcInfo.addrs;
-            registryResp.lastSeen = cdcInfo.lastSeen;
+            if (cdcInfo.addrs.addrs[0].port == 0) {
+                resp.resp.setError() = TernError::CDC_NOT_READY;
+            } else {
+                auto& registryResp = resp.resp.setCdcAtLocation();
+                registryResp.addrs = cdcInfo.addrs;
+                registryResp.lastSeen = cdcInfo.lastSeen;
+            }
             break;
         }
         case RegistryMessageKind::ALL_REGISTRY_REPLICAS_DE_PR_EC_AT_ED: {
@@ -238,6 +256,15 @@ void RegistryReader::_clearCaches() {
     _cachedAllBlockServices.clear();
     _cachedInfo.clear();
     _cachedCdc.clear();
+}
+
+bool RegistryReader::_allShardsReady(const std::vector<ShardInfo>& shards) {
+    for (const auto& shard : shards) {
+        if (shard.addrs.addrs[0].port == 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void RegistryReader::_populateShardCache() {

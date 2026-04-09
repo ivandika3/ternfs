@@ -103,6 +103,8 @@ const char* ternfs_err_str(int err) {
     case 103: return "LOCATION_NOT_FOUND";
     case 104: return "AUTO_DECOMMISSION_RATE_LIMITED";
     case 105: return "REGISTRY_OVERLOADED";
+    case 106: return "SHARDS_NOT_READY";
+    case 107: return "CDC_NOT_READY";
     default: return "UNKNOWN";
     }
 }

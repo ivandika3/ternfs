@@ -60,6 +60,7 @@ private:
     InfoResp _cachedInfo;
 
     void _clearCaches();
+    bool _allShardsReady(const std::vector<ShardInfo>& shards);
     void _populateShardCache();
     const std::vector<FullRegistryInfo>& _registries();
     const std::vector<ShardInfo>& _shardsAtLocation(LocationId location);
