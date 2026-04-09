@@ -351,7 +351,7 @@ export function renderIndex() {
         const [blockServices, setBlockServices] = useState(null);
         const [locations, setLocations] = useState(null);
         useEffect(async () => {
-            const resp = await registryReq('CHANGED_BLOCK_SERVICES', {Since: 0});
+            const resp = await registryReq('CHANGED_BLOCK_SERVICES', {Since: "1970-01-01T00:00:00Z"});
             setBlockServices(resp.BlockServices);
         }, []);
 
