@@ -122,6 +122,11 @@ static int ternfs_refresh_fs_info(struct ternfs_fs_info* info) {
             ternfs_shard_info_get_finish(&ctx, end);
             if (ctx.err != 0) { err = ternfs_error_to_linux(ctx.err); goto out_sock; }
 
+            if (shard_ip1.x == 0 || shard_port1.x == 0) {
+                ternfs_warn("shard %d has invalid primary address, skipping", shid);
+                continue;
+            }
+
             atomic64_set(&info->shard_addrs1[shid], ternfs_mk_addr(shard_ip1.x, shard_port1.x));
             atomic64_set(&info->shard_addrs2[shid], ternfs_mk_addr(shard_ip2.x, shard_port2.x));
         }
@@ -166,8 +171,12 @@ static int ternfs_refresh_fs_info(struct ternfs_fs_info* info) {
             ternfs_local_cdc_resp_get_finish(&ctx, end);
             if (ctx.err != 0) { err = ternfs_error_to_linux(ctx.err); goto out_sock; }
 
-            atomic64_set(&info->cdc_addr1, ternfs_mk_addr(cdc_ip1.x, cdc_port1.x));
-            atomic64_set(&info->cdc_addr2, ternfs_mk_addr(cdc_ip2.x, cdc_port2.x));
+            if (cdc_ip1.x == 0 || cdc_port1.x == 0) {
+                ternfs_warn("CDC has invalid primary address, skipping");
+            } else {
+                atomic64_set(&info->cdc_addr1, ternfs_mk_addr(cdc_ip1.x, cdc_port1.x));
+                atomic64_set(&info->cdc_addr2, ternfs_mk_addr(cdc_ip2.x, cdc_port2.x));
+            }
         }
     }
     {
