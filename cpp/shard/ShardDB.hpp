@@ -121,5 +121,7 @@ public:
     // For internal testing
     const std::array<uint8_t, 16>& secretKey() const;
 
+    std::atomic<uint64_t>& badBlockDeleteProofs();
+
     static std::vector<rocksdb::ColumnFamilyDescriptor> getColumnFamilyDescriptors();
 };

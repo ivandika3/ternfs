@@ -186,6 +186,8 @@ struct ShardDBImpl {
 
     const BlockServicesCacheDB& _blockServicesCache;
 
+    std::atomic<uint64_t> _badBlockDeleteProofs{0};
+
     // ----------------------------------------------------------------
     // initialization
 
@@ -3018,7 +3020,8 @@ struct ShardDBImpl {
 
         bool good = proof.proof == expectedProof;
         if (!good) {
-            RAISE_ALERT_APP_TYPE(_env, XmonAppType::DAYTIME, "Bad block delete proof for file %s, block service id %s, expected %s, got %s", fileId, blockServiceId, BincodeFixedBytes<8>(expectedProof), BincodeFixedBytes<8>(proof.proof));
+            LOG_WARN(_env, "Bad block delete proof for file %s, block service id %s, expected %s, got %s", fileId, blockServiceId, BincodeFixedBytes<8>(expectedProof), BincodeFixedBytes<8>(proof.proof));
+            _badBlockDeleteProofs.fetch_add(1, std::memory_order_relaxed);
         }
         return good;
     }
@@ -4131,6 +4134,10 @@ uint64_t ShardDB::lastAppliedLogEntry() {
 
 const std::array<uint8_t, 16>& ShardDB::secretKey() const {
     return ((ShardDBImpl*)_impl)->_secretKey;
+}
+
+std::atomic<uint64_t>& ShardDB::badBlockDeleteProofs() {
+    return ((ShardDBImpl*)_impl)->_badBlockDeleteProofs;
 }
 
 void ShardDB::flush(bool sync) {

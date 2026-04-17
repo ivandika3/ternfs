@@ -2415,6 +2415,8 @@ public:
             {"eggsfs_shard_write_requests_dropped", &_shared.droppedWriteReqs},
             {"eggsfs_shard_write_proxy_responses_droppedd", &_shared.droppedProxyWriteResps},
             {"eggsfs_shard_read_requests_dropped", &_shared.droppedReadReqs},
+            // error counts
+            {"eggsfs_shard_bad_block_delete_proofs", &_shared.shardDB.badBlockDeleteProofs()},
         };
     }
 
