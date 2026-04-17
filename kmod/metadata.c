@@ -4,6 +4,7 @@
 
 #include "metadata.h"
 
+#include <linux/jiffies.h>
 #include <linux/percpu.h>
 
 #include "net.h"
@@ -20,6 +21,8 @@
 int ternfs_mtu = TERNFS_DEFAULT_MTU;
 int ternfs_default_mtu = TERNFS_DEFAULT_MTU;
 int ternfs_max_mtu = TERNFS_MAX_MTU;
+
+#define MSECS_TO_JIFFIES(_ms) ((_ms * HZ) / 1000)
 
 int ternfs_rename_idempotency_window_jiffies = MSECS_TO_JIFFIES(120000); // 120 seconds
 
