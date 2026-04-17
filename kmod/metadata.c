@@ -21,7 +21,7 @@ int ternfs_mtu = TERNFS_DEFAULT_MTU;
 int ternfs_default_mtu = TERNFS_DEFAULT_MTU;
 int ternfs_max_mtu = TERNFS_MAX_MTU;
 
-#define TERNFS_RENAME_NEW_EDGE_CREATION_TIME_FUZZ_NS (60ULL * 1000 * 1000 * 1000) // 60 seconds
+int ternfs_rename_idempotency_window_jiffies = MSECS_TO_JIFFIES(120000); // 120 seconds
 
 static DEFINE_PER_CPU(u64, next_request_id);
 
@@ -374,7 +374,7 @@ static bool check_new_edge_after_rename(
             if (likely(ctx.err == 0) && !good && TERNFS_GET_EXTRA_ID(edge_target.x) == target) {
                 u64 now_ns = ktime_get_real_ns();
                 u64 delta = now_ns > edge_creation_time.x ? now_ns - edge_creation_time.x : edge_creation_time.x - now_ns;
-                if (delta < TERNFS_RENAME_NEW_EDGE_CREATION_TIME_FUZZ_NS) {
+                if (delta < (u64)jiffies_to_msecs(ternfs_rename_idempotency_window_jiffies) * 1000000ULL) {
                     good = true;
                     *creation_time = edge_creation_time.x;
                 }

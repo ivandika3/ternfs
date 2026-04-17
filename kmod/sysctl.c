@@ -157,6 +157,7 @@ static struct ctl_table ternfs_cb_sysctls[] = {
     TERNFS_CTL_UINT(file_io_timeout_sec),
     TERNFS_CTL_UINT(file_io_retry_refresh_span_interval_sec),
     TERNFS_CTL_UINT(disable_ftruncate),
+    TERNFS_CTL_INT_JIFFIES(rename_idempotency_window),
 
     {
         .procname = "mtu",

@@ -17,6 +17,7 @@
 extern int ternfs_mtu;
 extern int ternfs_default_mtu;
 extern int ternfs_max_mtu;
+extern int ternfs_rename_idempotency_window_jiffies;
 
 int ternfs_shard_lookup(struct ternfs_fs_info* info, u64 dir, const char* name, int name_len, u64* ino, u64* creation_time);
 int ternfs_shard_readdir(struct ternfs_fs_info* info, u64 dir, u64 start_pos, void* data, u64* next_hash);
