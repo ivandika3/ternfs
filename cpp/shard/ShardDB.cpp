@@ -541,12 +541,24 @@ struct ShardDBImpl {
         // this case is simpler, we just traverse all of it forwards or backwards.
         bool current = !!(req.flags&FULL_READ_DIR_CURRENT);
 
-        // setup bounds
+        // setup bounds. Forwards: upper bound is the first (snapshot) edge of
+        // dirId+1 -- a snapshot key so it has a creation time suffix (0).
+        // Backwards: lower bound is the largest *current* key of dirId-1
+        // (snapshot edges for D sort before current edges for D, so to go
+        // below the smallest snapshot edge of D we need the largest current
+        // edge of D-1). Current keys have no creation-time suffix, and
+        // setCreationTime() asserts snapshot() so it must not be called here.
         StaticValue<EdgeKey> endKey; // unchecked because it might stop being a directory
-        endKey().setDirIdWithCurrent(InodeId::FromU64Unchecked(req.dirId.u64 + (forwards ? 1 : -1)), !forwards);
-        endKey().setNameHash(forwards ? 0 : ~(uint64_t)0);
-        endKey().setName(forwards ? BincodeBytes().ref() : maxName.ref());
-        endKey().setCreationTime(forwards ? 0 : TernTime(~(uint64_t)0));
+        if (forwards) {
+            endKey().setDirIdWithCurrent(InodeId::FromU64Unchecked(req.dirId.u64 + 1), false);
+            endKey().setNameHash(0);
+            endKey().setName(BincodeBytes().ref());
+            endKey().setCreationTime(0);
+        } else {
+            endKey().setDirIdWithCurrent(InodeId::FromU64Unchecked(req.dirId.u64 - 1), true);
+            endKey().setNameHash(~(uint64_t)0);
+            endKey().setName(maxName.ref());
+        }
         rocksdb::Slice endKeySlice = endKey.toSlice();
         if (forwards) {
             options.iterate_upper_bound = &endKeySlice;

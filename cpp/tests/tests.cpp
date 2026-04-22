@@ -596,6 +596,77 @@ TEST_CASE("override") {
     }
 }
 
+TEST_CASE("fullreaddir backwards without same_name") {
+    // Regression: FullReadDirReq with BACKWARDS only (no SAME_NAME, no
+    // CURRENT) used to crash the shard in _fullReadDirNormal because the
+    // backwards boundary key is a *current* edge but the code still called
+    // setCreationTime() on it, which asserts snapshot().
+    TempShardDB db(LogLevel::LOG_ERROR, ShardId(0));
+
+    auto reqContainer = std::make_unique<ShardReqContainer>();
+    auto respContainer = std::make_unique<ShardRespContainer>();
+    auto logEntry = std::make_unique<ShardLogEntry>();
+    uint64_t logEntryIndex = 0;
+
+    const auto createFile = [&](const char* name) -> std::tuple<InodeId, TernTime> {
+        InodeId id;
+        BincodeFixedBytes<8> cookie;
+        {
+            auto& req = reqContainer->setConstructFile();
+            req.type = (uint8_t)InodeType::FILE;
+            req.note = "test note";
+            NO_TERN_ERROR(db->prepareLogEntry(*reqContainer, *logEntry));
+            NO_TERN_ERROR_IN_RESPONSE(*respContainer, db->applyLogEntry(++logEntryIndex, *logEntry, *respContainer));
+            db->flush(false);
+            auto& resp = respContainer->getConstructFile();
+            id = resp.id;
+            cookie = resp.cookie;
+        }
+        TernTime creationTime;
+        {
+            auto& req = reqContainer->setLinkFile();
+            req.fileId = id;
+            req.cookie = cookie;
+            req.ownerId = ROOT_DIR_INODE_ID;
+            req.name = name;
+            NO_TERN_ERROR(db->prepareLogEntry(*reqContainer, *logEntry));
+            NO_TERN_ERROR_IN_RESPONSE(*respContainer, db->applyLogEntry(++logEntryIndex, *logEntry, *respContainer));
+            db->flush(false);
+            creationTime = respContainer->getLinkFile().creationTime;
+        }
+        return {id, creationTime};
+    };
+
+    // Create two files and rename "foo" -> "foo2" to leave a snapshot edge
+    // behind for "foo". Enough structure that the backwards iterator has
+    // something to return.
+    auto [foo, fooCreationTime] = createFile("foo");
+    createFile("bar");
+    {
+        auto& req = reqContainer->setSameDirectoryRename();
+        req.dirId = ROOT_DIR_INODE_ID;
+        req.targetId = foo;
+        req.oldName = "foo";
+        req.oldCreationTime = fooCreationTime;
+        req.newName = "foo2";
+        NO_TERN_ERROR(db->prepareLogEntry(*reqContainer, *logEntry));
+        NO_TERN_ERROR_IN_RESPONSE(*respContainer, db->applyLogEntry(++logEntryIndex, *logEntry, *respContainer));
+        db->flush(false);
+    }
+
+    // Backwards iteration over snapshot edges only.
+    {
+        auto& req = reqContainer->setFullReadDir();
+        req.dirId = ROOT_DIR_INODE_ID;
+        req.flags = FULL_READ_DIR_BACKWARDS;
+        NO_TERN_ERROR_IN_RESPONSE(*respContainer, db->read(*reqContainer, *respContainer));
+        auto& resp = respContainer->getFullReadDir();
+        REQUIRE(resp.results.els.size() >= 1);
+        // The only snapshot edge is the now-historical "foo" rename source.
+        REQUIRE(resp.results.els[0].name == "foo");
+    }
+}
+
 TEST_CASE("test fmt") {
     {
         std::stringstream ss;
