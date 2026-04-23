@@ -1083,3 +1083,228 @@ TEST_CASE("picker stale service id from dropped lcKey does not corrupt weights")
     }
     _setCurrentTime(TernTime(0));
 }
+
+TEST_CASE("picker intra-FD clamp at max load spreads within heterogeneous FD") {
+    // Single FD with 10 disks: 1 fresh (2TB) + 9 near-full (10GB each).
+    // Initial throughput estimate = maxDriveThroughput * numDrives → ratio = 1.0 (max load).
+    // Phase 0 should clamp the fresh disk down to 10GB; each disk then receives ~1/10 of picks.
+    // Without Phase 0, the fresh disk would receive ~99.5% of picks (2000 / 2090 of in-FD weight).
+    _setCurrentTime(ternNow());
+    auto p = makePicker(1, 0_sec, 600'000'000, 600'000'000);
+
+    std::unordered_map<uint64_t, BlockServiceCache> cache;
+    auto mk = [](uint64_t avail) {
+        BlockServiceCache e;
+        e.locationId = 1;
+        e.storageClass = FLASH_STORAGE;
+        e.failureDomain = fdWith(1).name.data;
+        e.flags = BlockServiceFlags::EMPTY;
+        e.availableBytes = avail;
+        e.capacityBytes = avail * 10;
+        e.blocks = 0;
+        e.hasFiles = false;
+        return e;
+    };
+
+    const uint64_t FULL_AVAIL = 10'000'000'000ULL;       // 10 GB (near-full disk)
+    const uint64_t FRESH_AVAIL = 2'000'000'000'000ULL;   // 2 TB (fresh disk)
+    const uint64_t FRESH_ID = 1;
+
+    cache[FRESH_ID] = mk(FRESH_AVAIL);
+    for (uint64_t id = 2; id <= 10; id++) cache[id] = mk(FULL_AVAIL);
+
+    p.update(cache);
+    p.resetStats();
+
+    const int N = 200000;
+    for (int i = 0; i < N; i++) {
+        std::vector<BlockServiceId> out;
+        auto err = p.pick(1, FLASH_STORAGE, 1, {}, out);
+        REQUIRE(err == TernError::NO_ERROR);
+        REQUIRE(out.size() == 1);
+    }
+
+    auto stats = p.getStats();
+    uint64_t freshPicks = 0;
+    uint64_t totalPicks = 0;
+    for (const auto& b : stats.blockServices) {
+        totalPicks += b.picks;
+        if (b.blockServiceId == FRESH_ID) freshPicks = b.picks;
+    }
+    REQUIRE(totalPicks == (uint64_t)N);
+    double freshShare = (double)freshPicks / totalPicks;
+    CHECK(freshShare > 0.08);
+    CHECK(freshShare < 0.12);
+
+    _setCurrentTime(TernTime(0));
+}
+
+TEST_CASE("picker intra-FD clamp no-op at low load preserves capacity-proportional picks") {
+    // Same topology as the max-load case. Drive sustained low throughput so ratio
+    // becomes large; Phase 0 becomes a no-op and fresh disk dominates in-FD picks
+    // (this is the desirable "drain to fresh capacity when under-utilized" behaviour).
+    _setCurrentTime(ternNow());
+    auto p = makePicker(1, 0_sec, 600'000'000, 600'000'000);
+
+    std::unordered_map<uint64_t, BlockServiceCache> cache;
+    auto mk = [](uint64_t avail) {
+        BlockServiceCache e;
+        e.locationId = 1;
+        e.storageClass = FLASH_STORAGE;
+        e.failureDomain = fdWith(1).name.data;
+        e.flags = BlockServiceFlags::EMPTY;
+        e.availableBytes = avail;
+        e.capacityBytes = avail * 10;
+        e.blocks = 0;
+        e.hasFiles = false;
+        return e;
+    };
+
+    const uint64_t FULL_AVAIL = 10'000'000'000ULL;
+    const uint64_t FRESH_AVAIL = 2'000'000'000'000ULL;
+    const uint64_t FRESH_ID = 1;
+
+    cache[FRESH_ID] = mk(FRESH_AVAIL);
+    for (uint64_t id = 2; id <= 10; id++) cache[id] = mk(FULL_AVAIL);
+
+    p.update(cache);
+
+    // Simulate low throughput: 1000 tiny picks over 2s. ratio ≈ (600MB × 10) / ~12.8MB ≈ 469.
+    // svcCap = 10GB × 469 ≈ 4.7TB, well above fresh disk's 2TB → Phase 0 is a no-op.
+    for (int i = 0; i < 1000; i++) {
+        std::vector<BlockServiceId> out;
+        p.pick(1, FLASH_STORAGE, 1, {}, out, 100);
+    }
+    _setCurrentTime(ternNow() + 2_sec);
+    p.update(cache);
+
+    p.resetStats();
+    const int N = 50000;
+    for (int i = 0; i < N; i++) {
+        std::vector<BlockServiceId> out;
+        auto err = p.pick(1, FLASH_STORAGE, 1, {}, out);
+        REQUIRE(err == TernError::NO_ERROR);
+    }
+
+    auto stats = p.getStats();
+    uint64_t freshPicks = 0;
+    uint64_t totalPicks = 0;
+    for (const auto& b : stats.blockServices) {
+        totalPicks += b.picks;
+        if (b.blockServiceId == FRESH_ID) freshPicks = b.picks;
+    }
+    REQUIRE(totalPicks == (uint64_t)N);
+    double freshShare = (double)freshPicks / totalPicks;
+    // Fresh disk raw weight share = 2000 / 2090 ≈ 0.957.
+    CHECK(freshShare > 0.9);
+
+    _setCurrentTime(TernTime(0));
+}
+
+TEST_CASE("picker intra-FD clamp preserves consistency with service blacklist") {
+    // Verify intra-FD-clamped state stays consistent with the blacklist path:
+    // blacklisting a service that was clamped must still produce a valid pick
+    // without corrupting remaining FD weights.
+    _setCurrentTime(ternNow());
+    auto p = makePicker(3, 0_sec, 600'000'000, 600'000'000);
+
+    std::unordered_map<uint64_t, BlockServiceCache> cache;
+    auto mk = [](uint8_t fd, uint64_t avail) {
+        BlockServiceCache e;
+        e.locationId = 1;
+        e.storageClass = FLASH_STORAGE;
+        e.failureDomain = fdWith(fd).name.data;
+        e.flags = BlockServiceFlags::EMPTY;
+        e.availableBytes = avail;
+        e.capacityBytes = avail * 10;
+        e.blocks = 0;
+        e.hasFiles = false;
+        return e;
+    };
+
+    // FD1 heterogeneous: one 1TB fresh + two 10GB full — the fresh one gets clamped.
+    cache[1] = mk(1, 1'000'000'000'000ULL);
+    cache[2] = mk(1, 10'000'000'000ULL);
+    cache[3] = mk(1, 10'000'000'000ULL);
+    // FD2, FD3 uniform 10GB each.
+    cache[4] = mk(2, 10'000'000'000ULL);
+    cache[5] = mk(3, 10'000'000'000ULL);
+
+    p.update(cache);
+
+    std::vector<BlacklistEntry> bl;
+    BlacklistEntry e; e.blockService = BlockServiceId(1); bl.push_back(e);
+
+    for (int i = 0; i < 500; i++) {
+        std::vector<BlockServiceId> out;
+        auto err = p.pick(1, FLASH_STORAGE, 3, bl, out);
+        REQUIRE(err == TernError::NO_ERROR);
+        REQUIRE(out.size() == 3);
+        for (const auto& id : out) CHECK(id.u64 != 1);
+    }
+
+    _setCurrentTime(TernTime(0));
+}
+
+TEST_CASE("picker intra-FD clamp changes stride-cap outcome") {
+    // Without Phase 0: FD1 raw total = 2TB + 9×10GB ≈ 2.09TB dominates; cluster
+    // total ≈ 4.09TB; step = 1.36TB; FD1 > step → stride cap binds.
+    // With Phase 0: FD1 clamped to 10×10GB = 100GB; ratio cap equalises all 3 FDs
+    // to minFdWeight = 100GB → no stride cap needed; FD picks should be uniform
+    // and maxWeight == minWeight after update().
+    _setCurrentTime(ternNow());
+    auto p = makePicker(3, 0_sec, 600'000'000, 600'000'000);
+
+    std::unordered_map<uint64_t, BlockServiceCache> cache;
+    std::unordered_map<uint64_t, uint8_t> serviceToFd;
+
+    auto addSvc = [&](uint64_t id, uint8_t fdByte, uint64_t avail) {
+        BlockServiceCache e;
+        e.locationId = 1;
+        e.storageClass = FLASH_STORAGE;
+        e.failureDomain = fdWith(fdByte).name.data;
+        e.flags = BlockServiceFlags::EMPTY;
+        e.availableBytes = avail;
+        e.capacityBytes = avail * 10;
+        e.blocks = 0;
+        e.hasFiles = false;
+        cache[id] = e;
+        serviceToFd[id] = fdByte;
+    };
+
+    addSvc(1, 1, 2'000'000'000'000ULL);
+    for (uint64_t id = 2; id <= 10; id++) addSvc(id, 1, 10'000'000'000ULL);
+    for (uint64_t id = 11; id <= 20; id++) addSvc(id, 2, 100'000'000'000ULL);
+    for (uint64_t id = 21; id <= 30; id++) addSvc(id, 3, 100'000'000'000ULL);
+
+    p.update(cache);
+
+    auto stats = p.getStats();
+    bool saw = false;
+    for (const auto& ls : stats.locStorage) {
+        if ((ls.key & 0xFF) == FLASH_STORAGE) {
+            saw = true;
+            CHECK(ls.maxWeight == ls.minWeight);
+        }
+    }
+    CHECK(saw);
+
+    const int N = 60000;
+    std::unordered_map<uint8_t, int> fdPicks;
+    for (int i = 0; i < N; i++) {
+        std::vector<BlockServiceId> out;
+        auto err = p.pick(1, FLASH_STORAGE, 3, {}, out);
+        REQUIRE(err == TernError::NO_ERROR);
+        REQUIRE(out.size() == 3);
+        std::unordered_set<uint8_t> seen;
+        for (const auto& id : out) {
+            uint8_t fd = serviceToFd[id.u64];
+            CHECK(seen.insert(fd).second);
+            fdPicks[fd]++;
+        }
+    }
+    // With 3 FDs and needed=3 and all equal weight, each FD must be picked every time.
+    for (uint8_t fd = 1; fd <= 3; fd++) CHECK(fdPicks[fd] == N);
+
+    _setCurrentTime(TernTime(0));
+}

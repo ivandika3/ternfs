@@ -48,6 +48,41 @@ namespace {
         auto& failureDomains = lsInfo.failureDomains;
         if (failureDomains.empty()) return;
 
+        // Phase 0: intra-FD (service-level) clamp. Prevents a single fresh disk
+        // in an otherwise-full FD from owning nearly all of the FD's weight,
+        // which would cause a single-disk hotspot under stridePick. Uses the
+        // same throughput-derived ratio as the FD-level pass below.
+        if (maxFdRatio >= 1.0) {
+            for (auto& fd : failureDomains) {
+                uint64_t minSvcWeight = UINT64_MAX;
+                for (const auto& svc : fd.services) {
+                    if (svc.availableBytes > 0) {
+                        minSvcWeight = std::min(minSvcWeight, svc.availableBytes);
+                    }
+                }
+                if (minSvcWeight == UINT64_MAX) continue;
+
+                double svcCapD = static_cast<double>(minSvcWeight) * maxFdRatio;
+                uint64_t svcCap = (svcCapD >= static_cast<double>(UINT64_MAX))
+                    ? UINT64_MAX : static_cast<uint64_t>(svcCapD);
+                if (svcCap == 0) svcCap = 1;
+
+                uint64_t newFdTotal = 0;
+                for (auto& svc : fd.services) {
+                    if (svc.availableBytes == 0) continue;
+                    if (svc.availableBytes > svcCap) {
+                        svc.availableBytes = svcCap;
+                        serviceToFdInfo[svc.id.u64].weight = svcCap;
+                    }
+                    newFdTotal += svc.availableBytes;
+                }
+                fd.totalWeight = newFdTotal;
+            }
+            uint64_t newLsTotal = 0;
+            for (const auto& fd : failureDomains) newLsTotal += fd.totalWeight;
+            lsInfo.totalWeight = newLsTotal;
+        }
+
         uint64_t minFdWeight = UINT64_MAX;
         uint64_t maxFdWeight = 0;
         for (const auto& fd : failureDomains) {
