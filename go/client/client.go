@@ -963,9 +963,10 @@ type Client struct {
 	registryConn         *RegistryConn
 	clientReady          atomic.Bool
 
-	fetchBlockServices          bool
-	blockServicesLock           *sync.RWMutex
-	blockServiceToFailureDomain map[msgs.BlockServiceId]msgs.FailureDomain
+	fetchBlockServices      bool
+	blockServicesLock       *sync.RWMutex
+	blockServices           map[msgs.BlockServiceId]msgs.FullBlockServiceInfo
+	blockServicesLastChange msgs.TernTime
 }
 
 func (c *Client) refreshAddrs() error {
@@ -1004,36 +1005,12 @@ func (c *Client) refreshAddrs() error {
 		c.SetAddrs(cdcAddrs, &shardAddrs)
 	}
 
-	fetchBlockServices := func() bool {
-		c.blockServicesLock.RLock()
-		defer c.blockServicesLock.RUnlock()
-		return c.fetchBlockServices
-	}()
+	c.blockServicesLock.RLock()
+	fetchBlockServices := c.fetchBlockServices
+	c.blockServicesLock.RUnlock()
 	if fetchBlockServices {
-		blockServicesResp, err := c.registryConn.Request(&msgs.ChangedBlockServicesReq{})
-		if err != nil {
-			errMsg += fmt.Sprintf("could not request block services from registry: %v; ", err)
-		} else {
-			blockServices := blockServicesResp.(*msgs.ChangedBlockServicesResp)
-			var blockServicesToAdd []msgs.BlacklistEntry
-			func() {
-				c.blockServicesLock.RLock()
-				defer c.blockServicesLock.RUnlock()
-				for _, bs := range blockServices.BlockServices {
-					if _, ok := c.blockServiceToFailureDomain[bs.Id]; !ok {
-						blockServicesToAdd = append(blockServicesToAdd, msgs.BlacklistEntry{bs.FailureDomain, bs.Id})
-					}
-				}
-			}()
-			if len(blockServicesToAdd) > 0 {
-				func() {
-					c.blockServicesLock.Lock()
-					defer c.blockServicesLock.Unlock()
-					for _, bs := range blockServicesToAdd {
-						c.blockServiceToFailureDomain[bs.BlockService] = bs.FailureDomain
-					}
-				}()
-			}
+		if err := c.refreshBlockServices(); err != nil {
+			errMsg += fmt.Sprintf("%v; ", err)
 		}
 	}
 	if errMsg != "" {
@@ -1042,6 +1019,37 @@ func (c *Client) refreshAddrs() error {
 	c.clientReady.Store(true)
 	log.Info("Successfully refreshed shard/CDC addresses from registry")
 	return nil
+}
+
+func (c *Client) refreshBlockServices() error {
+	c.blockServicesLock.RLock()
+	since := c.blockServicesLastChange
+	c.blockServicesLock.RUnlock()
+	blockServicesResp, err := c.registryConn.Request(&msgs.ChangedBlockServicesReq{Since: since})
+	if err != nil {
+		return fmt.Errorf("could not request block services from registry: %v", err)
+	}
+	blockServices := blockServicesResp.(*msgs.ChangedBlockServicesResp)
+	c.blockServicesLock.Lock()
+	defer c.blockServicesLock.Unlock()
+	if c.blockServicesLastChange != since {
+		return nil
+	}
+	for _, bs := range blockServices.BlockServices {
+		c.blockServices[bs.Id] = bs
+	}
+	c.blockServicesLastChange = blockServices.LastChange
+	return nil
+}
+
+func (c *Client) RefreshBlockServices() error {
+	c.blockServicesLock.RLock()
+	if !c.fetchBlockServices {
+		c.blockServicesLock.RUnlock()
+		panic("RefreshBlockServices called without SetFetchBlockServices")
+	}
+	c.blockServicesLock.RUnlock()
+	return c.refreshBlockServices()
 }
 
 // Create a new client by acquiring the CDC and Shard connection details from Registry. It
@@ -1137,10 +1145,10 @@ func NewClientDirectNoAddrs(
 ) (c *Client, err error) {
 	c = &Client{
 		// do not catch requests from previous executions
-		requestIdCounter:            rand.Uint64(),
-		fetchBlockServices:          false,
-		blockServicesLock:           &sync.RWMutex{},
-		blockServiceToFailureDomain: make(map[msgs.BlockServiceId]msgs.FailureDomain),
+		requestIdCounter:   rand.Uint64(),
+		fetchBlockServices: false,
+		blockServicesLock:  &sync.RWMutex{},
+		blockServices:      make(map[msgs.BlockServiceId]msgs.FullBlockServiceInfo),
 	}
 	c.shardTimeout = &DefaultShardTimeout
 	c.cdcTimeout = &DefaultCDCTimeout
@@ -1693,8 +1701,21 @@ func (c *Client) GetFailureDomainForBlockService(blockServiceId msgs.BlockServic
 	if !c.fetchBlockServices {
 		panic("GetFailureDomainForBlockService called and flag to keep block services information not set")
 	}
-	failureDomain, ok := c.blockServiceToFailureDomain[blockServiceId]
-	return failureDomain, ok
+	bs, ok := c.blockServices[blockServiceId]
+	if !ok {
+		return msgs.FailureDomain{}, false
+	}
+	return bs.FailureDomain, true
+}
+
+func (c *Client) GetBlockService(blockServiceId msgs.BlockServiceId) (msgs.FullBlockServiceInfo, bool) {
+	c.blockServicesLock.RLock()
+	defer c.blockServicesLock.RUnlock()
+	if !c.fetchBlockServices {
+		panic("GetBlockService called and flag to keep block services information not set")
+	}
+	bs, ok := c.blockServices[blockServiceId]
+	return bs, ok
 }
 
 func (c *Client) RegistryRequest(logger *log.Logger, reqBody msgs.RegistryRequest) (msgs.RegistryResponse, error) {
