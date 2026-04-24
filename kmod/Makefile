@@ -6,7 +6,11 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 LLVM ?= 0
 
 MINOR_VERSION ?= 0
-FULL_MINOR_VERSION := "$(MINOR_VERSION)-$(shell git describe --always)"
+# Only populate GIT_REVISION when building inside a git checkout.
+# DKMS builds run on the target host from an extracted source tree with
+# revision.c already shipped — git will not be available there.
+GIT_REVISION := $(shell git describe --always 2>/dev/null)
+FULL_MINOR_VERSION := "$(MINOR_VERSION)-$(GIT_REVISION)"
 
 obj-m += ternfs-client.o
 
@@ -46,9 +50,18 @@ endif
 
 export CF = -Wbitwise -Wcontext -Wcast_truncate -Wsparse-all -Wno-shadow -Wnopointer-arith -Wnosizeof-bool -DCONFIG_SPARSE_RCU_POINTER
 
+ifneq ($(strip $(GIT_REVISION)),)
+# In a git checkout: regenerate revision.c on every build so the embedded
+# revision always matches HEAD.
 .PHONY: revision.c
 revision.c:
-	printf "#include \"sysfs.h\"\nconst char* ternfs_revision = \"$(shell git describe --always --dirty)\";\n" > revision.c
+	printf "#include \"sysfs.h\"\nconst char* ternfs_revision = \"$(GIT_REVISION)\";\n" > revision.c
+else
+# Outside a git checkout (e.g. DKMS): revision.c must already be shipped in
+# the source tree. Never overwrite it, and fail loudly if it's missing.
+revision.c:
+	@test -f $@ || { echo "revision.c missing and not a git checkout" >&2; exit 1; }
+endif
 
 EXTRA_FILES := ../cpp/crc32c/crc32c_body.c ../cpp/rs/gf_tables.c ../cpp/rs/rs_core.c
 
