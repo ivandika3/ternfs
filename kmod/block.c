@@ -184,6 +184,28 @@ static void bad_addrs_clear(void) {
     spin_unlock(&bad_addrs_lock);
 }
 
+#define BAD_ADDR_REAP_INTERVAL_JIFFIES MSECS_TO_JIFFIES(60 * 1000)
+
+static void do_reap_bad_addrs(struct work_struct* w);
+static DECLARE_DELAYED_WORK(bad_addrs_reap_work, do_reap_bad_addrs);
+
+static void do_reap_bad_addrs(struct work_struct* w) {
+    if (atomic_read(&bad_addrs_live) > 0) {
+        int bucket;
+        struct bad_addr* entry;
+        struct hlist_node* tmp;
+        u64 now = get_jiffies_64();
+        spin_lock(&bad_addrs_lock);
+        hash_for_each_safe(bad_addrs, bucket, tmp, entry, hnode) {
+            if (time_after64(now, entry->expiry)) {
+                bad_addr_remove_locked(entry);
+            }
+        }
+        spin_unlock(&bad_addrs_lock);
+    }
+    queue_delayed_work(ternfs_fast_wq, &bad_addrs_reap_work, BAD_ADDR_REAP_INTERVAL_JIFFIES);
+}
+
 static struct kmem_cache* fetch_request_cachep;
 static struct kmem_cache* write_request_cachep;
 
@@ -766,6 +788,11 @@ static struct block_socket*  get_block_socket(
     }
     rcu_read_unlock();
 
+    if (is_bad_addr(addr->sin_addr.s_addr, addr->sin_port)) {
+        ternfs_debug("socket to %pI4:%d in bad state, will not create", &addr->sin_addr, ntohs(addr->sin_port));
+        return ERR_PTR(-ENETUNREACH);
+    }
+
     ternfs_debug("socket to %pI4:%d not found, will create", &addr->sin_addr, ntohs(addr->sin_port));
 
     sock = kmalloc(sizeof(struct block_socket), GFP_KERNEL);
@@ -1015,24 +1042,7 @@ static struct block_socket* get_blockservice_socket(
 
     n_addrs = 1 + (bs->port2 != 0);
 
-    // If every address for this block service has recently failed to
-    // connect, fail immediately rather than wasting another 4s per
-    // attempt. The caller handles request failure (the read/write path
-    // picks a different block service or fails the op). Skipping is a
-    // no-op when cooldown is disabled (is_bad_addr returns false).
-    {
-        __be32 ip1_n = htonl(bs->ip1);
-        __be16 port1_n = htons(bs->port1);
-        bool bad1 = is_bad_addr(ip1_n, port1_n);
-        bool bad2 = (n_addrs == 2) &&
-            is_bad_addr(htonl(bs->ip2), htons(bs->port2));
-        if (bad1 && (n_addrs == 1 || bad2)) {
-            ternfs_debug("all addrs for bs=%016llx in cooldown, failing early", bs->id);
-            return ERR_PTR(-ENETUNREACH);
-        }
-    }
-
-    // Try addresses in round-robin order but skip any in cooldown.
+    // Try addresses in round-robin order
     block_ip = WHICH_BLOCK_IP++;
     for (i = 0; i < n_addrs; i++, block_ip++) {
         addr.sin_family = AF_INET;
@@ -1042,10 +1052,6 @@ static struct block_socket* get_blockservice_socket(
         } else {
             addr.sin_addr.s_addr = htonl(bs->ip2);
             addr.sin_port = htons(bs->port2);
-        }
-
-        if (is_bad_addr(addr.sin_addr.s_addr, addr.sin_port)) {
-            continue;
         }
 
         sock = get_block_socket(ops, &addr);
@@ -1850,6 +1856,7 @@ int __init ternfs_block_init(void) {
     bad_addrs_count = 0;
 
     queue_work(ternfs_fast_wq, &timeout_work.work);
+    queue_work(ternfs_fast_wq, &bad_addrs_reap_work.work);
 
     return 0;
 
@@ -1864,6 +1871,7 @@ void __cold ternfs_block_exit(void) {
 
     // stop timing out sockets
     cancel_delayed_work_sync(&timeout_work);
+    cancel_delayed_work_sync(&bad_addrs_reap_work);
 
     // If we're here, it means that all requests
     // must have finished. However we might still
