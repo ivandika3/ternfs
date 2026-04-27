@@ -285,7 +285,7 @@ func resurrectSubtreeTest(
 		"-mtu", "max",
 		"resurrect-subtree",
 		"-src-id", fmt.Sprintf("%v", uint64(srcId)),
-		"-dst", "/" + path.Join("resurrect-subtree-test", "test_resurrected"),
+		"-dst", "/"+path.Join("resurrect-subtree-test", "test_resurrected"),
 	)
 	cmd.Stdout = l.Sink(log.INFO)
 	cmd.Stderr = l.Sink(log.INFO)
